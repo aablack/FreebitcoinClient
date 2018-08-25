@@ -42,7 +42,7 @@ class Client:
         self._timeout = 15
         options = ChromeOptions()
         options.add_argument('--headless')
-        options.add_argument('--window-size=1600,1200')
+        options.add_argument('--window-size=1280,1024')
         options.add_argument('--no-sandbox')
         self._driver = None
         try:
@@ -68,7 +68,7 @@ class Client:
         start = time.time()
         while (time.time() - start) < self._timeout:
             try:
-                WebDriverWait(self._driver, 0.1).until(EC.visibility_of_element_located((By.ID, 'balance')))
+                WebDriverWait(self._driver, 0.1).until(EC.presence_of_element_located((By.ID, 'balance')))
                 self._logger.info('Login successful')
                 return True
             except TimeoutException:
@@ -141,13 +141,12 @@ class Client:
         )
         return ''.join(digits)
 
-    def _randomise_seed(self):
-        chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-        seed = str.join('', (random.choice(chars) for i in range(16)))
-        # Python 3.6+
-        # seed = str.join('', random.choices(chars, k=16))
+    def _randomise_seed(self, length=64):
+        chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890!@#$%^&*()'
+        seed = str.join('', (random.choice(chars) for i in range(length)))
         seed_field = self._driver.find_element_by_id('next_client_seed')
         self._driver.execute_script('arguments[0].value = "%s"' % seed, seed_field)
+        self._logger.debug('Seed: %s' % seed)
 
     @check_login
     def roll(self):
@@ -217,9 +216,9 @@ class Client:
     def get_balance(self):
         self._logger.info('Getting balance')
         try:
-            balance = self._driver.find_element_by_id('balance')
-            self._logger.debug('Balance: %s' % balance.text)
-            return float(balance.text)
+            balance = self._driver.find_element_by_id('balance').get_attribute('textContent')
+            self._logger.debug('Balance: %s' % balance)
+            return float(balance)
         except NoSuchElementException:
             self._logger.error('Unable to retrieve balance')
         except ValueError:
