@@ -164,6 +164,9 @@ class Client:
             self._logger.error('Roll failed, button not available')
             return False
 
+        play_wo_captcha_button = self._driver.find_element_by_id('play_without_captchas_button')
+        self._driver.execute_script('arguments[0].click()', play_wo_captcha_button)
+
         self._randomise_seed()
         free_play_button = self._driver.find_element_by_id('free_play_form_button')
         self._driver.execute_script('arguments[0].click()', free_play_button)
