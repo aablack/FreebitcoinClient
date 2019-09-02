@@ -1,4 +1,3 @@
-import locale
 import random
 import logging
 import re
@@ -43,7 +42,6 @@ class Client:
         self._session = HTMLSession()
         self._session.verify = verify
         self._cache = defaultdict(lambda: (None, datetime.now(), 5))
-        locale.setlocale( locale.LC_ALL, 'en_US.UTF-8')
 
     def login(self, username, password, otc=None):
         self._logger.info(f'Logging in, user: {username}')
@@ -133,7 +131,7 @@ class Client:
         html = self._get_main_page()
         balance = html.find('#balance', first=True).text
         self._logger.info(f'Balance: {balance}')
-        return locale.atof(balance)
+        return float(balance.replace(',', ''))
 
     @check_login
     def get_rp_bonus_timer(self):
@@ -153,7 +151,7 @@ class Client:
         html = self._get_main_page()
         points = html.find('div.user_reward_points', first=True).text
         self._logger.info(f'Rewards points: {points}')
-        return locale.atoi(points)
+        return int(points.replace(',', ''))
 
     def _get_rewards_timer(self, reward_type):
         self._logger.info(f'Retrieving rewards timer: {reward_type.bonus_id}')
