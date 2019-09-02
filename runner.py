@@ -1,3 +1,4 @@
+import twofagen
 import argparse
 import logging
 import signal
@@ -13,7 +14,6 @@ def exit_handler(signal, frame):
     logger.debug('Received signal to quit')
     stop_flag.set()
     [t.join(1) for t in threads if t.is_alive()]
-    client.close()
     exit(0)
 
 
@@ -21,7 +21,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-u', '--user', help='Username')
     parser.add_argument('-p', '--password', help='Password')
-    parser.add_argument('-c', '--twofactorauth', help='Two factor authentication code')
+    parser.add_argument('-c', '--otc', help='Two factor auth one-time code')
+    parser.add_argument('-s', '--otc_secret',
+                        help='Two factor auth secret (base64 encoded). Can be provided instead of the one-time code')
     parser.add_argument('-l', '--logpath', help='Log file path')
     parser.add_argument('-v', '--verbose', help='Debug logging', action='count', default=0)
     args = parser.parse_args()
@@ -58,9 +60,12 @@ if __name__ == '__main__':
         if sig:
             signal.signal(sig, exit_handler)
 
-    if not client.login(args.user, args.password, args.twofactorauth):
-        logger.error('Login failed. Terminating')
-        exit_handler(None, None)
+    if args.otc_secret:
+        otc = twofagen.gen_otc(args.otc_secret)
+    else:
+        otc = args.otc
+
+    client.login(args.user, args.password, otc)
 
     def activate_btc_bonus():
         # Enforce 1200 RP buffer for activating rewards points bonus
@@ -83,3 +88,4 @@ if __name__ == '__main__':
             time.sleep(1)
         except:
             exit_handler(None, None)
+

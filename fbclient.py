@@ -1,18 +1,17 @@
-import logging
+import locale
 import random
+import logging
 import re
-import time
 
+from datetime import datetime
+from datetime import timedelta
 from collections import namedtuple
+from collections import defaultdict
 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import TimeoutException
-from selenium.common.exceptions import NoSuchElementException
+import requests
 
+from urllib.parse import quote
+from requests_html import HTMLSession
 
 class RewardType:
     _RewardDefinition = namedtuple('RewardType', ['name', 'bonus_id'])
@@ -25,11 +24,13 @@ class RewardType:
 def check_login(func):
     def wrapper(*args, **kwargs):
         self = args[0]
-        try:
-            self._driver.find_element_by_id('balance')
+        self._logger.debug('Verifying login')
+        html = self._get_main_page()
+
+        if html.find('#balance', first=True):
             return func(*args, **kwargs)
-        except NoSuchElementException:
-            self._logger.error('You are not logged in')
+
+        self._logger.error('You are not logged in')
 
     return wrapper
 
@@ -37,87 +38,40 @@ def check_login(func):
 class Client:
     _URL = 'https://freebitco.in'
 
-    def __init__(self):
-        self._logger = logging.getLogger('root.fbclient')
-        self._timeout = 15
-        options = ChromeOptions()
-        options.add_argument('--headless')
-        options.add_argument('--window-size=1280,1024')
-        options.add_argument('--no-sandbox')
-        self._driver = None
-        try:
-            self._driver = webdriver.Chrome(chrome_options=options)
-            self._driver.get(self._URL)
-        except:
-            self._logger.exception('Error')
-            self.close()
-            raise
+    def __init__(self, verify=True):
+        self._logger = logging.getLogger('root.fbclient_direct')
+        self._session = HTMLSession()
+        self._session.verify = verify
+        self._cache = defaultdict(lambda: (None, datetime.now(), 5))
+        locale.setlocale( locale.LC_ALL, 'en_US.UTF-8')
 
-    def login(self, username, password, two_factor_auth=None):
-        self._logger.info('Starting login')
-        user_field = self._driver.find_element_by_id('login_form_btc_address')
-        self._driver.execute_script('arguments[0].value = "%s"' % username, user_field)
-        password_field = self._driver.find_element_by_id('login_form_password')
-        self._driver.execute_script('arguments[0].value = "%s"' % password, password_field)
-        if two_factor_auth:
-            two_factor_auth_field = self._driver.find_element_by_id('login_form_2fa')
-            self._driver.execute_script('arguments[0].value = "%s"' % two_factor_auth, two_factor_auth_field)
-        login_button = self._driver.find_element_by_id('login_button')
-        self._driver.execute_script('arguments[0].click()', login_button)
+    def login(self, username, password, otc=None):
+        self._logger.info(f'Logging in, user: {username}')
+        login_page = self._session.get(f'{self._URL}/?op=signup_page')
 
-        start = time.time()
-        while (time.time() - start) < self._timeout:
-            try:
-                WebDriverWait(self._driver, 0.1).until(EC.presence_of_element_located((By.ID, 'balance')))
-                self._logger.info('Login successful')
-                return True
-            except TimeoutException:
-                pass
+        csrf = login_page.cookies['csrf_token']
+        self._session.headers['x-csrf-token'] = csrf
 
-            try:
-                error = WebDriverWait(self._driver, 0.1).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, "#reward_point_redeem_result_container_div > p.reward_point_redeem_result_error > span.reward_point_redeem_result")))
-                self._logger.error('Unable to login: %s' % error.text)
-                return False
-            except TimeoutException:
-                pass
+        data = (f'csrf_token={quote(csrf)}'
+                f'&op=login_new'
+                f'&btc_address={quote(username)}'
+                f'&password={quote(password)}')
 
-        self._logger.error('Login failed, unknown error')
-        return False
+        if otc:
+            data += f'&tfa_code={otc}'
 
-    def _activate_bonus(self, reward_type, amount):
-        self._logger.info('Activating: %s %d bonus' % (reward_type.name, amount))
-        container = 'bonus_container_%s' % reward_type.bonus_id
+        response = self._session.post(self._URL, data)
+        result = response.text.split(':')
 
-        try:
-            WebDriverWait(self._driver, self._timeout).until(EC.invisibility_of_element_located((By.ID, container)))
-        except TimeoutException:
-            self._logger.error('Bonus is already active')
-            return False
-
-        self._driver.execute_script('RedeemRPProduct("%s_%d");' % (reward_type.bonus_id, amount))
-
-        start = time.time()
-        while (time.time() - start) < self._timeout:
-            try:
-                WebDriverWait(self._driver, 0.1).until(EC.visibility_of_element_located((By.ID, container)))
-                self._logger.info('Bonus claim successful')
-                return True
-            except TimeoutException:
-                pass
-
-            try:
-                error = WebDriverWait(self._driver, 0.1).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, "#reward_point_redeem_result_container_div > p.reward_point_redeem_result_error > span.reward_point_redeem_result")))
-
-                if error.is_displayed():
-                    self._logger.error('Bonus claim failed: %s' % error.text)
-                    return False
-            except TimeoutException:
-                pass
-
-        self._logger.error('Bonus claim unsuccessful, unknown error')
-        return False
+        if result[0] == 's':
+            self._logger.info('Login success')
+            self._session.cookies['btc_address'] = result[1]
+            self._session.cookies['password'] = result[2]
+            self._session.cookies['have_account'] = '1'
+        elif result[0] == 'e':
+            raise ValueError(f'Login failed: {result[1]}')
+        else:
+            raise ValueError(f'Login failed: {response}')
 
     @check_login
     def activate_rp_bonus(self, amount=100):
@@ -131,135 +85,55 @@ class Client:
     def activate_btc_bonus(self, amount=1000):
         return self._activate_bonus(RewardType.FreeBTC, amount)
 
-    def _get_roll_number(self):
-        digits = (
-            self._driver.find_element_by_id('free_play_first_digit').text,
-            self._driver.find_element_by_id('free_play_second_digit').text,
-            self._driver.find_element_by_id('free_play_third_digit').text,
-            self._driver.find_element_by_id('free_play_fourth_digit').text,
-            self._driver.find_element_by_id('free_play_fifth_digit').text,
-        )
-        return ''.join(digits)
-
-    def _randomise_seed(self, length=64):
-        chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890!@#$%^&*()'
-        seed = str.join('', (random.choice(chars) for i in range(length)))
-        seed_field = self._driver.find_element_by_id('next_client_seed')
-        self._driver.execute_script('arguments[0].value = "%s"' % seed, seed_field)
-        self._logger.debug('Seed: %s' % seed)
-
     @check_login
-    def roll(self):
+    def roll(self, play_without_captcha=False):
         self._logger.info('Rolling')
+        login_page = self._session.get(f'{self._URL}')
 
-        try:
-            WebDriverWait(self._driver, self._timeout).until(EC.invisibility_of_element_located((By.ID, 'time_remaining')))
-        except TimeoutException:
-            self._logger.error('Roll failed, timer running')
-            return False
+        data = (f'csrf_token={self._session.headers["x-csrf-token"]}'
+                f"&op=free_play"
+                f"&fingerprint=43b0ec50d04dfcf473f26b8fa7c8f72f"
+                f"&client_seed={self._get_roll_seed()}"
+                f"&fingerprint2=2592886125"
+                f"&pwc={int(play_without_captcha)}"
+                f"&89591411d5cf=1567309413%3A26e9b826a33e321aa27c09d235c158ff18de7f48ce850838ffe7f669cc30b436"
+                f"&d4202f82cc23=1b208b3be22da3a07e58deb40fbecc0ef43b43b3216b8c2cc9ba7bc28646c21e")
 
-        try:
-            WebDriverWait(self._driver, self._timeout).until(EC.visibility_of_element_located((By.ID, 'free_play_form_button')))
-        except TimeoutException:
-            self._logger.error('Roll failed, button not available')
-            return False
+        response = self._session.post(self._URL, data)
+        result = response.text.split(':')
 
-        play_wo_captcha_button = self._driver.find_element_by_id('play_without_captchas_button')
-        self._driver.execute_script('arguments[0].click()', play_wo_captcha_button)
+        if result[0] == 's':
+            self._logger.info(f'Roll success, number: {result[1]}, win: {result[3]} BTC, balance: {result[2]} BTC')
+            return True
+        elif result[0] == 'e':
+            self._logger.error(f'Roll failed: {result[1]}')
+        else:
+            self._logger.error(f'Roll failed: {response.text}')
 
-        self._randomise_seed()
-        free_play_button = self._driver.find_element_by_id('free_play_form_button')
-        self._driver.execute_script('arguments[0].click()', free_play_button)
-
-        start = time.time()
-        while (time.time() - start) < self._timeout:
-            try:
-                roll_result = WebDriverWait(self._driver, 0.1).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, '#free_play_result > div')))
-                self._logger.info('Rolled number: %s' % self._get_roll_number())
-                self._logger.info('Rolled result: %s' % roll_result.text)
-
-                # Close annoying popup
-                modal = self._driver.find_element_by_css_selector('#myModal22 > a')
-                self._driver.execute_script('arguments[0].click()', modal)
-
-                return True
-            except (TimeoutException, NoSuchElementException):
-                pass
-
-            try:
-                error = WebDriverWait(self._driver, 0.1).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, "#reward_point_redeem_result_container_div > p.reward_point_redeem_result_error > span.reward_point_redeem_result")))
-                self._logger.error('Roll failed: %s' % error.text)
-                return False
-            except TimeoutException:
-                pass
-
-        self._logger.error('Roll failed, unknown error')
         return False
 
     @check_login
     def get_roll_timer(self):
-        self._logger.debug('Checking roll timer')
-        try:
-            timer = self._get_timer_element('#time_remaining').text
-            timer = timer.replace('\r', ' ').replace('\n', ' ')
-            self._logger.debug('Roll timer: %s' % timer)
-            match = re.match('(\d{1,2})\s*Minutes\s*(\d{1,2})\s*Seconds', timer)
-            secs = int(match.group(1)) *  60 + int(match.group(2))
-            return secs
-        except NoSuchElementException:
-            self._logger.debug('Timer not running')
-        except (ValueError, IndexError, AttributeError):
-            self._logger.error('Timer cannot be parsed')
+        self._logger.info('Retrieving roll timer')
+        html = self._get_main_page()
+        time_remaining_pattern = re.compile("\$\('#time_remaining'\).countdown\({until: \+(\d+)")
+        match = time_remaining_pattern.search(html.html)
 
-        return 0
+        if not match:
+            self._logger.info('Timer not running')
+            return 0
+
+        countdown = match.group(1)
+        self._logger.info(f'Timer value: {countdown}')
+        return int(countdown)
 
     @check_login
     def get_balance(self):
-        self._logger.info('Getting balance')
-        try:
-            balance = self._driver.find_element_by_id('balance').get_attribute('textContent')
-            self._logger.debug('Balance: %s' % balance)
-            return float(balance)
-        except NoSuchElementException:
-            self._logger.error('Unable to retrieve balance')
-        except ValueError:
-            self._logger.error('Points balance does not appear to be a number')
-
-        return None
-
-    def _get_rewards_timer(self, reward_type):
-        self._logger.debug('Checking %s timer' % reward_type.name)
-        span = '#bonus_span_%s' % reward_type.bonus_id
-
-        try:
-            timer = self._get_timer_element(span).text
-            self._logger.debug('Timer: %s' % timer)
-            timer = timer.split(':')
-            secs = int(timer[0]) * 3600 + int(timer[1]) * 60 + int(timer[2])
-            return secs
-        except NoSuchElementException:
-            self._logger.debug('Timer not running, bonus is inactive')
-        except (IndexError, ValueError):
-            self._logger.error('Timer cannot be parsed')
-
-        return 0
-
-    def _get_timer_element(self, selector):
-        """ Timers on the page may require multiple attempts to successfully capture
-        due to their dynamic nature """
-        start = time.time()
-        while (time.time() - start) < 1:
-            element = self._driver.find_element_by_css_selector(selector)
-            if element.is_displayed:
-                if element.text:
-                    return element
-            else:
-                # element hidden
-                raise NoSuchElementException()
-
-        raise NoSuchElementException()
+        self._logger.info('Retrieving points balance')
+        html = self._get_main_page()
+        balance = html.find('#balance', first=True).text
+        self._logger.info(f'Balance: {balance}')
+        return locale.atof(balance)
 
     @check_login
     def get_rp_bonus_timer(self):
@@ -275,23 +149,62 @@ class Client:
 
     @check_login
     def get_rewards_balance(self):
-        self._logger.info('Getting rewards points balance')
-        try:
-            points = self._driver\
-                .find_element_by_css_selector(
-                    '#rewards_tab > div:nth-child(2) > div > div.reward_table_box.br_0_0_5_5.user_reward_points.font_bold')\
-                .get_attribute('textContent')
-            self._logger.debug('Points balance: %s' % points)
+        self._logger.info('Retrieving rewards balance')
+        html = self._get_main_page()
+        points = html.find('div.user_reward_points', first=True).text
+        self._logger.info(f'Rewards points: {points}')
+        return locale.atoi(points)
 
-            return int(points.replace(',', ''))
-        except NoSuchElementException:
-            self._logger.error('Unable to retrieve bonus points balance')
-        except ValueError:
-            self._logger.error('Points balance does not appear to be a number')
+    def _get_rewards_timer(self, reward_type):
+        self._logger.info(f'Retrieving rewards timer: {reward_type.bonus_id}')
+        html = self._get_main_page()
+        bonus_pattern = re.compile(f'BonusEndCountdown\("{reward_type.bonus_id}",(\d+)\)')
+        match = bonus_pattern.search(html.html)
 
-        return None
+        if not match:
+            self._logger.info(f'Bonus timer: {reward_type.bonus_id} not running')
+            return 0
 
-    def close(self):
-        if self._driver:
-            self._logger.info('Stopping selenium driver')
-            self._driver.quit()
+        countdown = match.group(1)
+        self._logger.info(f'Timer value: {countdown}')
+        return int(countdown)
+
+    def _get_main_page(self):
+        html, expiry, cache_time = self._cache['html']
+
+        if datetime.now() >= expiry:
+            self._logger.debug('Downloading main page')
+            html = self._session.get(f'{self._URL}/?op=home').html
+            expiry = datetime.now() + timedelta(seconds=cache_time)
+            self._cache['html'] = (html, expiry, cache_time)
+
+        return html
+
+    def _activate_bonus(self, reward_type, amount):
+        self._logger.info('Activating: %s %d bonus' % (reward_type.name, amount))
+
+        response = self._session.get(f'{self._URL}/'
+                                     f'?op=redeem_rewards'
+                                     f'&id={reward_type.bonus_id}_{amount}'
+                                     f'&points='
+                                     f'&csrf_token={self._session.headers["x-csrf-token"]}')
+
+        result = response.text.split(':')
+
+        if result[0] == 's':
+            self._logger.info(f'Bonus activation successful')
+            return True
+        elif result[0] == 'e':
+            self._logger.error(f'Roll failed: {result[1]}')
+        else:
+            self._logger.error(f'Roll failed: {response.text}')
+
+        return False
+
+    def _get_roll_seed(self, length=16):
+        self._logger.info('Generating roll seed')
+        chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890'
+        seed = str.join('', (random.choice(chars) for i in range(length)))
+        self._logger.debug('Seed: %s' % seed)
+        return seed
+
