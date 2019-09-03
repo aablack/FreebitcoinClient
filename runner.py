@@ -4,6 +4,7 @@ import logging
 import signal
 import time
 import threading
+
 from logging import handlers
 
 import fbclient
@@ -72,7 +73,7 @@ if __name__ == '__main__':
         if (client.get_rewards_balance() or 0) >= 4400:
             client.activate_btc_bonus()
         else:
-            logger.debug('Not activating BTC bonus because rewards points balance is too low')
+            logger.info('Not activating BTC bonus because rewards points balance is too low')
 
     threads.extend((
         TimerThread(lambda: client.activate_rp_bonus(), 86400, stop_flag, lock, client.get_rp_bonus_timer(), name='rewards_bonus_thread'),

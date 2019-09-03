@@ -21,8 +21,8 @@ if __name__ == '__main__':
     else:
         otc = args.otc
 
-    cli = fbclient.Client(verify=False)
-    cli.login(args.user, args.password, otc)
+    cli = fbclient.Client(verify_ssl=False)
+    #cli.login(args.user, args.password, otc)
     print(f'Balance: {cli.get_balance()}')
     print(f'Rewards balance: {cli.get_rewards_balance()}')
     print(f'Roll timer: {cli.get_roll_timer()}')

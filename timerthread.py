@@ -19,16 +19,16 @@ class TimerThread(threading.Thread):
         self._lock = lock
         self._start_delay = start_delay
         self._lock_timeout = lock_timeout
-        self._logger = logging.getLogger('root.%s' % name)
+        self._logger = logging.getLogger(f'root.{name}')
 
     def _execute(self):
         self._logger.debug('Acquiring lock')
         if self._lock.acquire(timeout=self._lock_timeout):
             self._logger.debug('Lock acquired')
             try:
-                self._logger.debug('Executing action')
+                self._logger.info('Executing action')
                 self._fn()
-                self._logger.debug('Execution completed')
+                self._logger.info('Execution completed')
             except:
                 self._logger.exception('Error')
                 raise
@@ -36,20 +36,20 @@ class TimerThread(threading.Thread):
                 self._logger.debug('Releasing lock')
                 self._lock.release()
         else:
-            self._logger.error('Could not acquire lock after: %d seconds. ' +
-                               'Aborting action this time around' % self._lock_timeout)
+            self._logger.error(f'Could not acquire lock after: {self._lock_timeout} seconds. Will retry next time.')
 
     def run(self):
         if self._start_delay:
-            self._logger.debug('Waiting out initial start delay: %d seconds' % self._start_delay)
+            self._logger.info(f'Waiting out initial start delay: {self._start_delay} seconds')
 
         if not self._stopped.wait(self._start_delay):
             self._execute()
 
-        self._logger.debug('Waiting: %d seconds' % self._interval)
+        self._logger.info(f'Waiting: {self._interval} seconds')
         while not self._stopped.wait(self._interval):
-            self._logger.debug('Timer expired')
+            self._logger.info('Timer expired')
             self._execute()
-            self._logger.debug('Waiting: %d seconds' % self._interval)
+            self._logger.info(f'Waiting: {self._interval} seconds')
 
-        self._logger.debug('Stop flag has been set by main thread. Exiting')
+        self._logger.info('Stop flag has been set by main thread. Exiting')
+

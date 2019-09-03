@@ -7,44 +7,43 @@ from datetime import timedelta
 from collections import namedtuple
 from collections import defaultdict
 
-import requests
-
 from urllib.parse import quote
 from requests_html import HTMLSession
-
-class RewardType:
-    _RewardDefinition = namedtuple('RewardType', ['name', 'bonus_id'])
-
-    Points = _RewardDefinition('Rewards Points Booster', 'free_points')
-    Lottery = _RewardDefinition('Free Lottery Tickets', 'free_lott')
-    FreeBTC = _RewardDefinition('Free BTC Booster', 'fp_bonus')
-
-
-def check_login(func):
-    def wrapper(*args, **kwargs):
-        self = args[0]
-        self._logger.debug('Verifying login')
-        html = self._get_main_page()
-
-        if html.find('#balance', first=True):
-            return func(*args, **kwargs)
-
-        self._logger.error('You are not logged in')
-
-    return wrapper
 
 
 class Client:
     _URL = 'https://freebitco.in'
 
-    def __init__(self, verify=True):
+    def __init__(self, verify_ssl=True):
         self._logger = logging.getLogger('root.fbclient_direct')
         self._session = HTMLSession()
-        self._session.verify = verify
+        self._session.verify = verify_ssl
         self._cache = defaultdict(lambda: (None, datetime.now(), 5))
+
+    def _check_login(func):
+        def wrapper(*args, **kwargs):
+            self = args[0]
+            self._logger.debug('Verifying login')
+            html = self._get_main_page()
+
+            if html.find('#balance', first=True):
+                return func(*args, **kwargs)
+
+            self._logger.error('You are not logged in')
+            raise LoginError('Not logged in')
+
+        return wrapper
 
     def login(self, username, password, otc=None):
         self._logger.info(f'Logging in, user: {username}')
+
+        if not username:
+            self._logger.error('Username required')
+            raise ValueError('Username required')
+        elif not password:
+            self._logger.error('Password required')
+            raise ValueError('Password required')
+
         login_page = self._session.get(f'{self._URL}/?op=signup_page')
 
         csrf = login_page.cookies['csrf_token']
@@ -67,23 +66,23 @@ class Client:
             self._session.cookies['password'] = result[2]
             self._session.cookies['have_account'] = '1'
         elif result[0] == 'e':
-            raise ValueError(f'Login failed: {result[1]}')
+            raise LoginError(f'Login failed: {result[1]}')
         else:
-            raise ValueError(f'Login failed: {response}')
+            raise LoginError(f'Login failed: {response}')
 
-    @check_login
+    @_check_login
     def activate_rp_bonus(self, amount=100):
-        return self._activate_bonus(RewardType.Points, amount)
+        return self._activate_bonus(_RewardType.Points, amount)
 
-    @check_login
+    @_check_login
     def activate_lottery_bonus(self, amount=100):
-        return self._activate_bonus(RewardType.Lottery, amount)
+        return self._activate_bonus(_RewardType.Lottery, amount)
 
-    @check_login
+    @_check_login
     def activate_btc_bonus(self, amount=1000):
-        return self._activate_bonus(RewardType.FreeBTC, amount)
+        return self._activate_bonus(_RewardType.FreeBTC, amount)
 
-    @check_login
+    @_check_login
     def roll(self, play_without_captcha=False):
         self._logger.info('Rolling')
         login_page = self._session.get(f'{self._URL}')
@@ -110,7 +109,7 @@ class Client:
 
         return False
 
-    @check_login
+    @_check_login
     def get_roll_timer(self):
         self._logger.info('Retrieving roll timer')
         html = self._get_main_page()
@@ -125,7 +124,7 @@ class Client:
         self._logger.info(f'Timer value: {countdown}')
         return int(countdown)
 
-    @check_login
+    @_check_login
     def get_balance(self):
         self._logger.info('Retrieving points balance')
         html = self._get_main_page()
@@ -133,19 +132,19 @@ class Client:
         self._logger.info(f'Balance: {balance}')
         return float(balance.replace(',', ''))
 
-    @check_login
+    @_check_login
     def get_rp_bonus_timer(self):
-        return self._get_rewards_timer(RewardType.Points)
+        return self._get_rewards_timer(_RewardType.Points)
 
-    @check_login
+    @_check_login
     def get_lottery_bonus_timer(self):
-        return self._get_rewards_timer(RewardType.Lottery)
+        return self._get_rewards_timer(_RewardType.Lottery)
 
-    @check_login
+    @_check_login
     def get_btc_bonus_timer(self):
-        return self._get_rewards_timer(RewardType.FreeBTC)
+        return self._get_rewards_timer(_RewardType.FreeBTC)
 
-    @check_login
+    @_check_login
     def get_rewards_balance(self):
         self._logger.info('Retrieving rewards balance')
         html = self._get_main_page()
@@ -205,4 +204,16 @@ class Client:
         seed = str.join('', (random.choice(chars) for i in range(length)))
         self._logger.debug('Seed: %s' % seed)
         return seed
+
+
+class _RewardType:
+    _RewardDefinition = namedtuple('RewardType', ['name', 'bonus_id'])
+
+    Points = _RewardDefinition('Rewards Points Booster', 'free_points')
+    Lottery = _RewardDefinition('Free Lottery Tickets', 'free_lott')
+    FreeBTC = _RewardDefinition('Free BTC Booster', 'fp_bonus')
+
+
+class LoginError(BaseException):
+    pass
 
